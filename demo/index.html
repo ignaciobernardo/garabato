@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garabato · demo</title>
+<style>
+  :root { --ink: #16161a; --paper: #f6f3ee; --muted: #6d6a65; --line: #e2ddd4; --accent: #c8452c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.55 ui-serif, Georgia, "Times New Roman", serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; font: 500 14px/1 -apple-system, system-ui, sans-serif; }
+  nav .links { display: flex; gap: 26px; color: var(--muted); }
+  nav b { letter-spacing: .14em; }
+  .hero { padding: 90px 0 80px; border-bottom: 1px solid var(--line); }
+  .hero h1 { font-size: clamp(44px, 7vw, 92px); line-height: .98; letter-spacing: -.03em; margin: 0 0 26px; font-weight: 400; max-width: 11ch; }
+  .hero p { max-width: 520px; color: var(--muted); font-size: 19px; margin: 0 0 30px; }
+  .btn { display: inline-block; padding: 14px 22px; border-radius: 999px; background: var(--ink); color: var(--paper); text-decoration: none; font: 500 15px/1 -apple-system, system-ui, sans-serif; }
+  .btn.alt { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); margin-left: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+  .grid article { background: var(--paper); padding: 40px 28px 48px; }
+  .grid h3 { margin: 18px 0 8px; font-weight: 400; font-size: 26px; }
+  .grid p { margin: 0; color: var(--muted); font-size: 15px; }
+  .swatch { height: 160px; border-radius: 4px; }
+  .s1 { background: linear-gradient(135deg, #3b2a20, #8a5a3c); } .s2 { background: linear-gradient(135deg, #c8452c, #e8a25c); } .s3 { background: linear-gradient(135deg, #2d3b2f, #7c9a72); }
+  .quote { padding: 110px 0; text-align: center; font-size: clamp(28px, 4vw, 46px); line-height: 1.2; letter-spacing: -.015em; border-bottom: 1px solid var(--line); }
+  .quote small { display: block; margin-top: 20px; font: 14px -apple-system, system-ui, sans-serif; color: var(--muted); }
+  .pricing { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 90px 0; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 32px; background: #fbf9f5; }
+  .card .price { font-size: 52px; letter-spacing: -.02em; }
+  .card ul { padding-left: 18px; color: var(--muted); font-size: 15px; }
+  footer { padding: 40px 0 140px; color: var(--muted); font: 13px -apple-system, system-ui, sans-serif; display: flex; justify-content: space-between; }
+  .hint { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 10; background: var(--ink); color: var(--paper); font: 13px/1.3 -apple-system, system-ui, sans-serif; padding: 9px 14px; border-radius: 999px; }
+  @media (max-width: 760px) { .grid, .pricing { grid-template-columns: 1fr; } nav .links { display: none; } }
+</style>
+</head>
+<body>
+  <div class="hint">Garabato demo · the toolbar at the bottom is the tool</div>
+  <div class="wrap">
+    <nav><b>TOSTADO</b><div class="links"><span>Coffee</span><span>Subscription</span><span>Shops</span><span>Contact</span></div></nav>
+    <section class="hero">
+      <h1>Single-origin coffee, roasted this week.</h1>
+      <p>We pick small lots from growers in Colombia, Ethiopia and Peru, and roast them in Santiago every Tuesday.</p>
+      <a class="btn" href="#precios">See subscription</a><a class="btn alt" href="#cafes">Browse coffee</a>
+    </section>
+  </div>
+  <div class="wrap" id="cafes">
+    <div class="grid">
+      <article><div class="swatch s1"></div><h3>Huila, Colombia</h3><p>Panela, cocoa and orange. Washed, 1,750 masl.</p></article>
+      <article><div class="swatch s2"></div><h3>Guji, Ethiopia</h3><p>Peach, jasmine and black tea. Natural, 2,100 masl.</p></article>
+      <article><div class="swatch s3"></div><h3>Cajamarca, Peru</h3><p>Almond, red apple and honey. Honey process, 1,900 masl.</p></article>
+    </div>
+  </div>
+  <div class="wrap"><div class="quote">“The best coffee I’ve had in Chile, and it comes to my door.”<small>— Camila R., subscriber since 2024</small></div></div>
+  <div class="wrap" id="precios">
+    <div class="pricing">
+      <div class="card"><div>Monthly</div><div class="price">$14.990</div><ul><li>250 g every month</li><li>Ground for your brew method</li><li>Free shipping in Santiago</li></ul><a class="btn" href="#">Subscribe</a></div>
+      <div class="card"><div>Biweekly</div><div class="price">$26.990</div><ul><li>2 × 250 g a month</li><li>Access to micro-lots</li><li>Free shipping across Chile</li></ul><a class="btn" href="#">Subscribe</a></div>
+    </div>
+    <footer><span>© 2026 Tostado</span><span>Made in Santiago</span></footer>
+  </div>
+  <script src="/extension/garabato.js"></script>
+</body>
+</html>

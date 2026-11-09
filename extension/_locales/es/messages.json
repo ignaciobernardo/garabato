@@ -1,0 +1,7 @@
+{
+  "extName": { "message": "Garabato" },
+  "extDesc": { "message": "Raya cualquier página web mientras la grabas: pestaña + cámara + micrófono, dibujos y comentarios con su minuto en el video." },
+  "actionTitle": { "message": "Garabato: comentar esta página (Alt+Shift+G)" },
+  "toggleCmd": { "message": "Mostrar u ocultar Garabato en la pestaña" },
+  "cantOpen": { "message": "Garabato no puede abrirse en esta página" }
+}
