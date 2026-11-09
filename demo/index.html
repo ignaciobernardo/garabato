@@ -59,6 +59,9 @@
     </div>
     <footer><span>© 2026 Tostado</span><span>Made in Santiago</span></footer>
   </div>
-  <script src="/extension/garabato.js"></script>
+  <script>
+    // load Garabato straight from the repo, unless the garabato CLI already injected it
+    if (!document.querySelector('script[data-bridge]')) document.body.appendChild(Object.assign(document.createElement('script'), { src: '/extension/garabato.js' }));
+  </script>
 </body>
 </html>

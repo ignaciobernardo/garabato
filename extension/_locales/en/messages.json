@@ -1,7 +1,17 @@
 {
-  "extName": { "message": "Garabato" },
-  "extDesc": { "message": "Scribble on any web page while you record it: tab + camera + mic, drawings and comments stamped with their time in the video." },
-  "actionTitle": { "message": "Garabato: annotate this page (Alt+Shift+G)" },
-  "toggleCmd": { "message": "Show or hide Garabato on this tab" },
-  "cantOpen": { "message": "Garabato can't run on this page" }
+  "extName": {
+    "message": "Garabato"
+  },
+  "extDesc": {
+    "message": "Talk through a web page while you draw on it. Your coding agent gets what you said, what you marked, and screenshots."
+  },
+  "actionTitle": {
+    "message": "Garabato: annotate this page (Alt+Shift+G)"
+  },
+  "toggleCmd": {
+    "message": "Show or hide Garabato on this tab"
+  },
+  "cantOpen": {
+    "message": "Garabato can't run on this page"
+  }
 }

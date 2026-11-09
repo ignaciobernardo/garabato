@@ -1,5 +1,6 @@
-/* Garabato — scribble on any web page while you record it: tab + camera + mic,
-   drawings on top and comments pinned to the page, stamped with their time in the video.
+/* Garabato — talk through any web page while you draw on it, and turn that into feedback a
+   coding agent can act on: what you said, what you marked (selector, text, source file), and
+   screenshots, as Markdown + JSON. Also records the tab with your camera and mic.
    Works as an injected content script (the extension) or as a plain <script>.
    https://github.com/ignaciobernardo/garabato · MIT */
 (() => {
@@ -20,6 +21,9 @@
   const setHTML = (el, s) => { el.innerHTML = ttPolicy ? ttPolicy.createHTML(s) : s; };
   // inside the extension the review video plays in our own page (sidesteps the site's CSP)
   const PLAYER = (() => { try { return globalThis.chrome?.runtime?.id ? chrome.runtime.getURL('player.html') : null; } catch { return null; } })();
+  // served by the garabato CLI: feedback can go straight to the agent session
+  const BRIDGE = (() => { try { return document.currentScript?.dataset.bridge || null; } catch { return null; } })();
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
   const isEditable = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
   // ───────────────────────────── i18n: English, or Spanish when the browser is in Spanish
@@ -49,6 +53,14 @@
       ready: 'Recording ready', recording: 'Recording', downloadVideo: 'Download video', mdBtn: 'Comments .md', vttBtn: 'Subtitles .vtt',
       copyBtn: 'Copy comments', discard: 'Discard', discardSure: 'Discard without downloading? Click again', notSaved: "You haven't downloaded the video yet",
       fadeOn: 'Fading ink: strokes clear themselves', fadeOff: 'Permanent ink', fadeShort: 'Fading ink',
+      transcriptLabel: 'Transcript', speechTip: 'Live transcript', speechOff: 'Transcript off', langOff: 'Off', speechLang: (l) => `Transcribing in ${l}`,
+      speechNote: "Uses Chrome's speech recognition, which may send audio to Google.",
+      speechNet: "Live transcript unavailable: Chrome's speech service didn't answer", speechBlocked: 'Transcript blocked: allow the microphone for this site',
+      sendAgent: 'Send to agent', sending: 'Sending…', sentShort: 'Sent', sent: (p) => `Sent to your agent · ${p}`, sendFailed: "Couldn't reach the agent session: ",
+      copyAgent: 'Copy for agent', agentCopied: 'Copied: paste it into your agent', downloadFeedback: 'Download feedback',
+      agentSession: 'Agent session: what you say and draw goes to your agent', nothingYet: 'Nothing to send yet',
+      moments: 'What your agent gets',
+      kinds: { highlight: 'Highlight', underline: 'Underline', circle: 'Circle', box: 'Box', arrow: 'Arrow', sketch: 'Drawing', comment: 'Comment' },
       stopFirst: 'Stop recording before hiding', hello: 'Garabato is ready · C comments · P draws · Record captures this tab',
     },
     es: {
@@ -75,9 +87,21 @@
       ready: 'Grabación lista', recording: 'Grabación', downloadVideo: 'Descargar video', mdBtn: 'Comentarios .md', vttBtn: 'Subtítulos .vtt',
       copyBtn: 'Copiar comentarios', discard: 'Descartar', discardSure: '¿Descartar sin descargar? Clic otra vez', notSaved: 'El video no se ha descargado todavía',
       fadeOn: 'Tinta efímera: los trazos se borran solos', fadeOff: 'Tinta fija', fadeShort: 'Tinta efímera',
+      transcriptLabel: 'Transcripción', speechTip: 'Transcripción en vivo', speechOff: 'Transcripción apagada', langOff: 'Apagada', speechLang: (l) => `Transcribiendo en ${l}`,
+      speechNote: 'Usa el reconocimiento de voz de Chrome, que puede enviar el audio a Google.',
+      speechNet: 'La transcripción en vivo no está disponible: el servicio de voz de Chrome no respondió', speechBlocked: 'Transcripción bloqueada: permite el micrófono en este sitio',
+      sendAgent: 'Enviar al agente', sending: 'Enviando…', sentShort: 'Enviado', sent: (p) => `Enviado a tu agente · ${p}`, sendFailed: 'No pude conectar con la sesión del agente: ',
+      copyAgent: 'Copiar para el agente', agentCopied: 'Copiado: pégalo en tu agente', downloadFeedback: 'Descargar feedback',
+      agentSession: 'Sesión con agente: lo que digas y dibujes le llega a tu agente', nothingYet: 'Todavía no hay nada que enviar',
+      moments: 'Lo que recibe tu agente',
+      kinds: { highlight: 'Destacado', underline: 'Subrayado', circle: 'Círculo', box: 'Recuadro', arrow: 'Flecha', sketch: 'Dibujo', comment: 'Comentario' },
       stopFirst: 'Detén la grabación antes de ocultar', hello: 'Garabato listo · C comenta · P dibuja · Grabar captura esta pestaña',
     },
   }[LANG];
+  const SPEECH_LANGS = [
+    { id: 'es', label: 'Español', code: /^es\b/i.test(navigator.language || '') ? navigator.language : 'es-419' },
+    { id: 'en', label: 'English', code: /^en\b/i.test(navigator.language || '') ? navigator.language : 'en-US' },
+  ];
 
   // ───────────────────────────── icons (24×24, stroke)
   const P = {
@@ -100,6 +124,8 @@
     download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
     copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5V5.5a1.5 1.5 0 0 0-1.5-1.5H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>',
     resize: '<path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/>',
+    speech: '<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/>',
+    send: '<path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/>',
   };
   const icon = (n, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]}${extra}</svg>`;
   const grip = '<svg viewBox="0 0 8 16" aria-hidden="true"><g fill="currentColor"><circle cx="2" cy="3" r="1.2"/><circle cx="6" cy="3" r="1.2"/><circle cx="2" cy="8" r="1.2"/><circle cx="6" cy="8" r="1.2"/><circle cx="2" cy="13" r="1.2"/><circle cx="6" cy="13" r="1.2"/></g></svg>';
@@ -135,13 +161,19 @@
     fade: false,
     micOn: true,
     camOn: false,
-    camWanted: true, // the camera turns on by itself when recording, unless you switch it off
+    camWanted: !BRIDGE, // turns on by itself when recording (off in agent sessions: it would cover the page in the screenshots)
     camSize: 1,
     strokes: [],
     comments: [],
     history: [],
     panelOpen: false,
     recCount: 0,
+    recDur: [],
+    transcribe: !!SR,
+    speechLang: LANG === 'es' ? 0 : 1,
+    marks: [],  // every stroke with what it points at, kept even after it fades or is cleared
+    speech: [], // transcript segments
+    frames: [], // screenshots grabbed from the recording
   };
   let uid = 0;
 
@@ -292,9 +324,39 @@
   .countdown .hint { position: absolute; top: calc(50% + 100px); color: #fff; font-size: 13px; text-shadow: 0 1px 6px rgba(0,0,0,.5); }
 
   /* toast */
-  .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%) translateY(8px); padding: 9px 14px; border-radius: 10px;
+  .toast { position: fixed; left: 50%; top: 18px; transform: translateX(-50%) translateY(-8px); padding: 9px 14px; border-radius: 10px;
     background: rgba(29,29,31,.92); color: #fff; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; max-width: min(520px, 90vw); text-align: center; }
   .toast.on { opacity: 1; transform: translateX(-50%); }
+
+  /* live transcript */
+  .caption { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); width: max-content; max-width: min(660px, 88vw);
+    padding: 7px 13px 8px; border-radius: 10px; background: rgba(29,29,31,.84); color: #fff; font-size: 15px; line-height: 1.38;
+    text-align: center; pointer-events: none; text-wrap: balance; }
+  .caption i { font-style: normal; opacity: .6; }
+  .ib .lang { position: absolute; right: 1px; bottom: 2px; padding: 1px 3px; border-radius: 4px; background: #fff; color: #1d1d1f;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.14); font: 700 8px/1 -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: .02em; }
+  .langs { position: fixed; display: flex; flex-direction: column; gap: 1px; padding: 5px; border-radius: 12px; pointer-events: auto; background: #fff;
+    width: 230px; box-shadow: 0 0 0 1px rgba(0,0,0,.08), 0 10px 30px rgba(0,0,0,.18); }
+  .langs button { height: 30px; padding: 0 10px; border-radius: 8px; text-align: left; display: flex; align-items: center; }
+  .langs button:hover { background: #f2f2f7; }
+  .langs button.on { font-weight: 600; }
+  .langs button.on::after { content: "✓"; margin-left: auto; color: #0A84FF; }
+  .langs .note { padding: 6px 10px 4px; font-size: 11px; line-height: 1.35; color: #8e8e93; }
+
+  /* moments (review sidebar) */
+  .rv-side h4 { margin: 8px 8px 2px; font-size: 11px; font-weight: 600; color: #8e8e93; text-transform: uppercase; letter-spacing: .04em; }
+  .moment { display: block; width: 100%; padding: 8px; border-radius: 10px; text-align: left; }
+  .moment[data-t]:hover { background: #f5f5f7; }
+  .moment .meta { display: flex; gap: 6px; align-items: center; margin-bottom: 5px; }
+  .moment .quote { margin-bottom: 5px; }
+  .moment .quote::before { content: "“"; } .moment .quote::after { content: "”"; }
+  .moment .marks { display: flex; flex-wrap: wrap; gap: 4px; }
+  .moment .mark { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: #f2f2f7; color: #3a3a3c; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .moment .mark b { font-weight: 600; }
+  .moment .thumb { display: block; width: 100%; margin-top: 7px; border-radius: 6px; box-shadow: 0 0 0 1px rgba(0,0,0,.1); }
+  .btn.agent { background: #0A84FF; color: #fff; } .btn.agent:hover { background: #0071e3; }
+  .btn:disabled { opacity: .6; pointer-events: none; }
 
   /* review */
   .review { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; pointer-events: auto; background: rgba(0,0,0,.5); animation: garabato-fade .2s; }
@@ -306,7 +368,7 @@
   .muted { color: #8e8e93; font-variant-numeric: tabular-nums; }
   .rv-body { display: grid; grid-template-columns: 1fr 280px; min-height: 0; flex: 1; border-top: 1px solid rgba(0,0,0,.07); }
   .rv-body.solo { grid-template-columns: 1fr; }
-  .rv-main { background: #0b0b0c; display: flex; flex-direction: column; min-height: 0; }
+  .rv-main { background: #0b0b0c; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
   .rv-main .player { width: 100%; aspect-ratio: var(--ar, 16 / 10); max-height: calc(100vh - 230px); background: #000; display: block; border: 0; }
   .rv-track { position: relative; height: 22px; margin: 0 14px 10px; }
   .rv-track::before { content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 2px; border-radius: 1px; background: rgba(255,255,255,.18); }
@@ -345,13 +407,16 @@
       <span class="sep"></span>
       <button class="ib" data-act="cam" title="${T.camera}"></button>
       <button class="ib mic" data-act="mic" title="${T.mic}"></button>
+      <button class="ib${SR ? '' : ' hidden'}" data-act="speech" title="${T.speechTip}"></button>
       <button class="ib" data-act="list" title="${T.commentsKey}">${icon('list')}<span class="badge"></span></button>
       <button class="ib" data-act="close" title="${T.hide}">${icon('close')}</button>
     </div>
     <div class="colors ui hidden">${COLORS.map((c, i) => `<button data-color="${i}" title="${c.name}" style="--c:${c.c}"></button>`).join('')}</div>
+    <div class="langs ui hidden"></div>
     <div class="editor ui hidden"></div>
     <div class="panel ui hidden"></div>
     <div class="countdown ui hidden"><div class="num">3</div><div class="hint">${T.clickToCancel}</div></div>
+    <div class="caption ui hidden"></div>
     <div class="toast ui"></div>
     <div class="review ui hidden"></div>
   `);
@@ -366,6 +431,8 @@
   const camVideo = $('.cam video');
   const bar = $('.bar');
   const colorsEl = $('.colors');
+  const langsEl = $('.langs');
+  const captionEl = $('.caption');
   const editor = $('.editor');
   const panel = $('.panel');
   const cdEl = $('.countdown');
@@ -491,7 +558,7 @@
     e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     const p = docPt(e);
-    cur = { id: ++uid, tool: state.tool, color: state.color.c, w: WIDTH[state.tool], pts: state.tool === 'pen' || state.tool === 'marker' ? [p] : [p, { ...p }] };
+    cur = { id: ++uid, at: Date.now(), t0: isRec() ? elapsed() : null, rec: isRec() ? state.recCount : null, tool: state.tool, color: state.color.c, w: WIDTH[state.tool], pts: state.tool === 'pen' || state.tool === 'marker' ? [p] : [p, { ...p }] };
     state.strokes.push(cur);
     dirty();
   });
@@ -516,6 +583,10 @@
     } else {
       state.history.push({ type: 'stroke', ref: s });
       if (state.fade) s.fadeAt = now() + FADE_DELAY;
+      s.atEnd = Date.now();
+      s.desc = describeStroke(s);
+      state.marks.push(s);
+      if (isRec()) scheduleFrame(s);
     }
     dirty();
   };
@@ -526,7 +597,7 @@
     while (state.history.length) {
       const h = state.history.pop();
       if (h.type === 'stroke') {
-        if (state.strokes.includes(h.ref)) { state.strokes = state.strokes.filter((s) => s !== h.ref); dirty(); return; }
+        if (state.strokes.includes(h.ref)) { state.strokes = state.strokes.filter((s) => s !== h.ref); state.marks = state.marks.filter((s) => s !== h.ref); dirty(); return; }
       } else if (h.type === 'comment') {
         if (state.comments.includes(h.ref)) { removeComment(h.ref); return; }
       }
@@ -564,6 +635,123 @@
     const txt = (el.getAttribute?.('aria-label') || el.alt || el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
     return txt.length > 70 ? txt.slice(0, 68) + '…' : txt;
   }
+
+  // ───────────────────────────── what each mark points at (so an agent can find it)
+  // Dev servers leave breadcrumbs back to the source: Astro and inspector plugins as attributes;
+  // React ≤18, Svelte and Vue as properties, readable when we run in the page's own world.
+  function sourceOf(el) {
+    for (let e = el, i = 0; e && e.nodeType === 1 && i < 12; e = e.parentElement, i++) {
+      const af = e.getAttribute('data-astro-source-file');
+      if (af) {
+        const line = (e.getAttribute('data-astro-source-loc') || '').split(':')[0];
+        return af.replace(/^.*?\/(?=src\/)/, '') + (line ? ':' + line : '');
+      }
+      const cid = [...e.attributes].find((x) => x.name.startsWith('data-astro-cid-'));
+      const cf = cid && astroCidFile(cid.name.slice(15));
+      if (cf) return cf.replace(/^.*?\/(?=src\/)/, '');
+      const insp = e.getAttribute('data-insp-path') || e.getAttribute('data-v-inspector');
+      if (insp) { const m = insp.match(/^(.+?):(\d+)/); return m ? `${m[1]}:${m[2]}` : insp; }
+      try {
+        const sv = e.__svelte_meta?.loc;
+        if (sv?.file) return `${sv.file}:${sv.line}`;
+        const fk = Object.keys(e).find((k) => k.startsWith('__reactFiber$'));
+        for (let f = fk ? e[fk] : null, j = 0; f && j < 25; f = f.return, j++) {
+          if (f._debugSource) return `${f._debugSource.fileName}:${f._debugSource.lineNumber}`;
+        }
+        const vf = e.__vueParentComponent?.type?.__file;
+        if (vf) return vf;
+      } catch { /* not readable from this world */ }
+    }
+    return null;
+  }
+  // Astro dev without the toolbar: scoped styles carry the component's file and its data-astro-cid
+  let cidFiles = null;
+  function astroCidFile(cid) {
+    if (!cidFiles) {
+      cidFiles = new Map();
+      for (const st of document.querySelectorAll('style[data-vite-dev-id]')) {
+        const file = (st.getAttribute('data-vite-dev-id') || '').split('?')[0];
+        for (const m of (st.textContent || '').matchAll(/data-astro-cid-([a-z0-9]+)/g)) if (!cidFiles.has(m[1])) cidFiles.set(m[1], file);
+      }
+    }
+    return cidFiles.get(cid) || null;
+  }
+  const info = (el) => (el ? { selector: describe(el) || el.tagName.toLowerCase(), text: snippet(el), source: sourceOf(el) } : null);
+  // hit-test the page itself, under our overlay
+  function probe(fn) { const v = root.style.visibility; root.style.visibility = 'hidden'; try { return fn(); } finally { root.style.visibility = v; } }
+  const isWord = (ch) => /[\p{L}\p{N}'’-]/u.test(ch || '');
+  function textBetween(a, b) {
+    if (!document.caretRangeFromPoint) return '';
+    const ra = document.caretRangeFromPoint(a.x, a.y), rb = document.caretRangeFromPoint(b.x, b.y);
+    if (!ra || !rb) return '';
+    let s = ra, e = rb;
+    const r = document.createRange();
+    try {
+      if (ra.compareBoundaryPoints(Range.START_TO_START, rb) > 0) { s = rb; e = ra; }
+      const sn = s.startContainer, en = e.startContainer;
+      let so = s.startOffset, eo = e.startOffset;
+      if (sn.nodeType === 3) while (so > 0 && isWord(sn.data[so - 1])) so--;
+      if (en.nodeType === 3) while (eo < en.data.length && isWord(en.data[eo])) eo++;
+      r.setStart(sn, so); r.setEnd(en, eo);
+    } catch { return ''; }
+    const t = r.toString().replace(/\s+/g, ' ').trim();
+    return t.length > 180 ? t.slice(0, 178) + '…' : t;
+  }
+  const isBig = (el) => { const r = el.getBoundingClientRect(); return r.width * r.height > W * H * 0.3; };
+  // what an arrow points at: the first reasonably small element at or just past its tip
+  function pointedAt(tip, ang) {
+    for (const k of [0, 10, 22, 38]) {
+      const el = elementAt(tip.x + Math.cos(ang) * k, tip.y + Math.sin(ang) * k);
+      if (el && !isBig(el)) return el;
+    }
+    return elementAt(tip.x, tip.y);
+  }
+  // what a loop or box surrounds: the biggest element that fits inside it, or the words it cuts through
+  function enclosedBy(vb) {
+    const cx = vb.x + vb.w / 2, cy = vb.y + vb.h / 2, tol = 16;
+    const el = elementAt(cx, cy);
+    let best = null;
+    for (let e = el; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+      const r = e.getBoundingClientRect();
+      if (r.left >= vb.x - tol && r.top >= vb.y - tol && r.right <= vb.x + vb.w + tol && r.bottom <= vb.y + vb.h + tol) best = e;
+      else break;
+    }
+    if (best) return { el: best, text: '' };
+    return { el, text: textBetween({ x: vb.x + 4, y: cy }, { x: vb.x + vb.w - 4, y: cy }) };
+  }
+  const DIRS = ['right', 'down-right', 'down', 'down-left', 'left', 'up-left', 'up', 'up-right'];
+  const compass = (ang) => DIRS[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8];
+  function simplify(pts, n) {
+    const pick = pts.length <= n ? pts : Array.from({ length: n }, (_, i) => pts[Math.round((i * (pts.length - 1)) / (n - 1))]);
+    return pick.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+  }
+  function describeStroke(s) {
+    const sx = window.scrollX, sy = window.scrollY;
+    const xs = s.pts.map((p) => p.x), ys = s.pts.map((p) => p.y);
+    const box = { x: Math.round(Math.min(...xs)), y: Math.round(Math.min(...ys)), w: Math.round(Math.max(...xs) - Math.min(...xs)), h: Math.round(Math.max(...ys) - Math.min(...ys)) };
+    const vb = { x: box.x - sx, y: box.y - sy, w: box.w, h: box.h };
+    const last = s.pts[s.pts.length - 1];
+    const a = { x: s.pts[0].x - sx, y: s.pts[0].y - sy }, b = { x: last.x - sx, y: last.y - sy };
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    return probe(() => {
+      if (s.tool === 'arrow') {
+        const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        const tail = elementAt(a.x, a.y);
+        return { kind: 'arrow', to: info(pointedAt(b, ang)), from: tail && !isBig(tail) ? info(tail) : null, direction: compass(ang), length: Math.round(Math.hypot(b.x - a.x, b.y - a.y)), box };
+      }
+      if (s.tool === 'marker') return { kind: 'highlight', text: textBetween(a, b), target: info(elementAt(mid.x, mid.y)), box };
+      if (s.tool === 'pen' && box.h < 26 && box.w > 40) {
+        const up = (p) => ({ x: p.x, y: p.y - 12 });
+        return { kind: 'underline', text: textBetween(up(a), up(b)), target: info(elementAt(mid.x, mid.y - 12)), box };
+      }
+      const closed = s.tool === 'rect' || (s.pts.length > 8 && Math.hypot(b.x - a.x, b.y - a.y) < Math.max(40, 0.35 * Math.min(box.w, box.h)));
+      if (closed) {
+        const t = enclosedBy(vb);
+        return { kind: s.tool === 'rect' ? 'box' : 'circle', target: info(t.el), text: t.text, box };
+      }
+      return { kind: 'sketch', over: info(elementAt(vb.x + vb.w / 2, vb.y + vb.h / 2)), from: info(elementAt(a.x, a.y)), to: info(elementAt(b.x, b.y)), path: simplify(s.pts, 10), box };
+    });
+  }
   const isRec = () => rec.status === 'recording' || rec.status === 'paused';
   const numberOf = (c) => state.comments.indexOf(c) + 1;
   const colorOf = (c) => COLORS.find((x) => x.c === c.color) || COLORS[0];
@@ -574,7 +762,7 @@
     const c = {
       id: ++uid, x: cx + window.scrollX, y: cy + window.scrollY, text: '', color: state.color.c,
       t: isRec() ? elapsed() : null, rec: isRec() ? state.recCount : null,
-      url: location.href, target: describe(el), snippet: snippet(el), createdAt: Date.now(), fresh: true,
+      url: location.href, target: describe(el), snippet: snippet(el), source: sourceOf(el), createdAt: Date.now(), fresh: true,
     };
     state.comments.push(c);
     renderPins();
@@ -658,7 +846,7 @@
     if (save) {
       if (!text && c.fresh) { state.comments = state.comments.filter((x) => x !== c); }
       else if (text) {
-        if (c.fresh) state.history.push({ type: 'comment', ref: c });
+        if (c.fresh) { state.history.push({ type: 'comment', ref: c }); if (isRec()) scheduleFrame(c); }
         c.text = text; c.fresh = false;
       }
     } else if (c.fresh) {
@@ -686,8 +874,8 @@
     const items = state.comments.filter((c) => !c.fresh);
     setHTML(panel, `
       <div class="p-head"><b>${T.comments}</b><span class="muted">${items.length}</span><span class="sp"></span>
-        <button class="ib" data-p="copy" title="${T.copyMd}">${icon('copy')}</button>
-        <button class="ib" data-p="md" title="${T.downloadMd}">${icon('download')}</button>
+        <button class="ib" data-p="copy" title="${T.copyAgent}">${icon('copy')}</button>
+        ${BRIDGE ? `<button class="ib" data-p="agent" title="${T.sendAgent}">${icon('send')}</button>` : `<button class="ib" data-p="md" title="${T.downloadFeedback}">${icon('download')}</button>`}
         <button class="ib" data-p="close" title="${T.close}">${icon('close')}</button></div>
       <div class="p-list">${items.length ? items.map((c) => itemHTML(c)).join('') :
         `<div class="empty-state">${T.emptyPanel}</div>`}</div>`);
@@ -704,8 +892,9 @@
     if (b) {
       const a = b.dataset.p;
       if (a === 'close') { state.panelOpen = false; renderPanel(); updateBar(); }
-      else if (a === 'copy') copyText(toMarkdown()).then(() => toast(T.copied));
-      else if (a === 'md') downloadText(toMarkdown(), `${baseName()}.md`, 'text/markdown');
+      else if (a === 'copy') copyForAgent();
+      else if (a === 'md') downloadFeedback();
+      else if (a === 'agent') sendToAgent(b);
       return;
     }
     const it = e.target.closest('.item');
@@ -724,29 +913,201 @@
     const h = (location.hostname || T.page).replace(/^www\./, '').replace(/[^a-z0-9.-]+/gi, '-');
     return `garabato-${h}-${stamp}`;
   }
-  function toMarkdown(onlyRec = null, durMs = null) {
-    const list = state.comments.filter((c) => !c.fresh);
-    const lines = [`# ${T.comments} · ${document.title || location.hostname}`, '', `${location.href}`, ''];
-    const meta = [new Date().toLocaleString(), T.nComments(list.length)];
-    if (durMs != null) meta.push(`${T.video} ${fmt(durMs)}`);
-    lines.push(meta.join(' · '), '');
-    list.forEach((c) => {
-      const tm = c.t != null && (onlyRec == null || c.rec === onlyRec) ? `**[${fmt(c.t)}]** ` : '';
-      lines.push(`${numberOf(c)}. ${tm}${c.text.replace(/\n/g, '\n   ')}`);
-      const where = [c.target && `\`${c.target}\``, c.snippet && `“${c.snippet}”`].filter(Boolean).join(' — ');
-      if (where) lines.push(`   ${where}`);
-      if (c.url !== location.href) lines.push(`   ${c.url}`);
-    });
-    return lines.join('\n') + '\n';
-  }
   function toVTT(recN, durMs) {
-    const list = state.comments.filter((c) => !c.fresh && c.rec === recN && c.t != null).sort((a, b) => a.t - b.t);
+    const cues = [
+      ...state.speech.filter((x) => x.rec === recN).map((x) => ({ a: x.t0, b: Math.max(x.t1, x.t0 + 1200), text: x.text })),
+      ...state.comments.filter((c) => !c.fresh && c.text && c.rec === recN && c.t != null).map((c) => ({ a: c.t, b: c.t + 4500, text: `#${numberOf(c)} · ${c.text}` })),
+    ].sort((x, y) => x.a - y.a);
     const out = ['WEBVTT', ''];
-    list.forEach((c, i) => {
-      const end = Math.min(c.t + 4500, durMs || c.t + 4500);
-      out.push(String(i + 1), `${vttTime(c.t)} --> ${vttTime(Math.max(end, c.t + 800))}`, `${numberOf(c)} · ${c.text}`, '');
+    cues.forEach((c, i) => out.push(String(i + 1), `${vttTime(c.a)} --> ${vttTime(Math.max(c.a + 500, Math.min(c.b, durMs || c.b)))}`, c.text, ''));
+    return { text: out.join('\n'), count: cues.length };
+  }
+
+  // ───────────────────────────── feedback for agents: feedback.md + feedback.json + frames/
+  const frameName = (id) => `frames/${String(id).padStart(2, '0')}.jpg`;
+  const tLabel = (t, n, take = 'R') => (t == null ? '' : (state.recCount > 1 ? `${take}${n} ` : '') + fmt(t));
+  const hasFeedback = () => state.marks.length > 0 || state.speech.length > 0 || state.comments.some((c) => !c.fresh && c.text);
+
+  // a moment = marks made close together (or on the same frame) + what was said around them
+  function buildMoments() {
+    const marks = [
+      ...state.marks.map((m) => ({ type: 'stroke', at0: m.at, at1: m.atEnd || m.at, t: m.t0, rec: m.rec, ref: m, frame: m.frame || null })),
+      ...state.comments.filter((c) => !c.fresh && c.text).map((c) => ({ type: 'comment', at0: c.createdAt, at1: c.createdAt, t: c.t, rec: c.rec, ref: c, frame: c.frame || null })),
+    ].sort((x, y) => x.at0 - y.at0);
+    const out = [];
+    for (const m of marks) {
+      const last = out[out.length - 1];
+      // marks in one burst share a frame; without a recording, marks close in time go together
+      if (last && (m.frame ? m.frame === last.frame : !last.frame && m.at0 - last.at1 < 1500)) {
+        last.marks.push(m); last.at1 = Math.max(last.at1, m.at1); last.frame = last.frame || m.frame;
+      } else out.push({ at0: m.at0, at1: m.at1, marks: [m], said: [], frame: m.frame });
+    }
+    let loose = null;
+    for (const x of state.speech) {
+      let best = null, gap = Infinity;
+      for (const mo of out) {
+        if (!mo.marks.length) continue;
+        const g = Math.max(0, x.at0 - mo.at1, mo.at0 - x.at1);
+        if (g < gap) { gap = g; best = mo; }
+      }
+      if (best && gap <= 4000) { best.said.push(x); continue; }
+      if (loose && loose.frame === x.frame && x.at0 - loose.at1 < 15000) { loose.said.push(x); loose.at1 = x.at1; continue; }
+      loose = { at0: x.at0, at1: x.at1, marks: [], said: [x], frame: x.frame };
+      out.push(loose);
+    }
+    for (const mo of out) {
+      mo.said.sort((x, y) => x.at0 - y.at0);
+      const ts = [...mo.marks.filter((m) => m.t != null).map((m) => [m.t, m.rec, m.at0]), ...mo.said.map((x) => [x.t0, x.rec, x.at0])].sort((x, y) => x[2] - y[2]);
+      mo.t = ts.length ? ts[0][0] : null; mo.rec = ts.length ? ts[0][1] : null;
+      mo.at0 = Math.min(mo.at0, ...mo.said.map((x) => x.at0));
+    }
+    return out.sort((x, y) => x.at0 - y.at0);
+  }
+  const mdEl = (i) => {
+    if (!i) return 'empty space';
+    let s = '`' + (i.selector || 'body') + '`';
+    if (i.text) s += ` (“${i.text}”)`;
+    if (i.source) s += ` · \`${i.source}\``;
+    return s;
+  };
+  function markLine(m) {
+    if (m.type === 'comment') { const c = m.ref; return `**Comment ${numberOf(c)}** on ${mdEl({ selector: c.target, text: c.snippet, source: c.source })}: ${c.text.replace(/\n+/g, ' / ')}`; }
+    const d = m.ref.desc || {};
+    const words = (verb) => `**${verb}** ${d.text ? `“${d.text}” in ` : ''}${mdEl(d.target)}`;
+    switch (d.kind) {
+      case 'highlight': return words('Highlighted');
+      case 'underline': return words('Underlined');
+      case 'circle': return words('Circled');
+      case 'box': return words('Drew a box around');
+      case 'arrow': return `**Arrow** pointing ${d.direction} at ${mdEl(d.to)}${d.from ? `, drawn from ${mdEl(d.from)}` : ''}`;
+      case 'sketch': {
+        const other = (x) => x && x.selector !== d.over?.selector;
+        return `**Freehand drawing** over ${mdEl(d.over)}${other(d.from) ? `, starting at ${mdEl(d.from)}` : ''}${other(d.to) && d.to.selector !== d.from?.selector ? `, ending at ${mdEl(d.to)}` : ''}; ` +
+          `box ${d.box.w}×${d.box.h} at (${d.box.x}, ${d.box.y}); path in page px: ${d.path.map((p) => `${p.x},${p.y}`).join(' → ')}`;
+      }
+      default: return '**Mark**';
+    }
+  }
+  function toAgentMarkdown({ images = true } = {}) {
+    const moments = buildMoments();
+    const L = [`# Feedback · ${document.title || location.hostname || location.href}`, '', `- Page: ${location.href}`, `- Viewport: ${W}×${H} CSS px, device pixel ratio ${dpr}`];
+    const recs = state.recDur.map((d, i) => (d == null ? null : `${state.recDur.length > 1 ? `R${i + 1} ` : ''}${fmt(d)}`)).filter(Boolean);
+    if (recs.length) L.push(`- Recording: ${recs.join(', ')}`);
+    const langs = [...new Set(state.speech.map((x) => x.lang))];
+    if (langs.length) L.push(`- Speech: ${langs.join(', ')} (automatic transcript, may have recognition errors)`);
+    L.push(`- Exported: ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`, '',
+      'A reviewer went through this page out loud while drawing on it. Each moment below pairs what they said with what they marked, in order. ' +
+      'Quotes are an automatic transcript; frames are screenshots of the page with their marks on it. Selectors, quoted text and source locations identify the marked elements. ' +
+      'Read it as a list of changes to make to the page.', '');
+    if (!moments.length) L.push('_No marks or speech were captured._', '');
+    moments.forEach((mo, i) => {
+      const t = tLabel(mo.t, mo.rec);
+      L.push(`## ${i + 1}${t ? ` · ${t}` : ''}`, '');
+      if (mo.said.length) L.push(mo.said.map((x) => `> ${x.text}`).join('\n>\n'), '');
+      if (mo.marks.length) L.push(...mo.marks.map((m) => `- ${markLine(m)}`), '');
+      if (images && mo.frame && state.frames.some((f) => f.id === mo.frame)) L.push(`![Moment ${i + 1}](${frameName(mo.frame)})`, '');
     });
-    return out.join('\n');
+    if (state.speech.length) L.push('## Transcript', '', ...state.speech.map((x) => `- [${tLabel(x.t0, x.rec)}] ${x.text}`), '');
+    return L.join('\n');
+  }
+  function toAgentJSON(moments = buildMoments()) {
+    const used = new Set(moments.map((m) => m.frame));
+    const mark = (m) => {
+      if (m.type === 'comment') return { type: 'comment', n: numberOf(m.ref), text: m.ref.text, target: { selector: m.ref.target, text: m.ref.snippet, source: m.ref.source } };
+      const { kind, ...rest } = m.ref.desc || {};
+      return { type: kind || m.ref.tool, tool: m.ref.tool, color: m.ref.color, ...rest };
+    };
+    return {
+      format: 'garabato-feedback/1',
+      page: { url: location.href, title: document.title, viewport: { width: W, height: H, dpr } },
+      exportedAt: new Date().toISOString(),
+      recordings: state.recDur.map((d, i) => ({ n: i + 1, durationMs: Math.round(d || 0) })),
+      moments: moments.map((mo, i) => ({ n: i + 1, recording: mo.rec, timeMs: mo.t == null ? null : Math.round(mo.t), said: mo.said.map((x) => x.text), marks: mo.marks.map(mark), frame: mo.frame ? frameName(mo.frame) : null })),
+      transcript: state.speech.map((x) => ({ recording: x.rec, startMs: Math.round(x.t0), endMs: Math.round(x.t1), lang: x.lang, text: x.text })),
+      frames: state.frames.filter((f) => used.has(f.id)).map((f) => ({ file: frameName(f.id), recording: f.rec, timeMs: f.t == null ? null : Math.round(f.t), width: f.w, height: f.h })),
+    };
+  }
+  async function feedbackFiles() {
+    const moments = buildMoments();
+    const used = new Set(moments.map((m) => m.frame));
+    const list = state.frames.filter((f) => used.has(f.id));
+    await Promise.all(list.map((f) => f.ready));
+    return [
+      { name: 'feedback.md', data: toAgentMarkdown() },
+      { name: 'feedback.json', data: JSON.stringify(toAgentJSON(moments), null, 2) },
+      ...list.filter((f) => f.blob).map((f) => ({ name: frameName(f.id), data: f.blob })),
+    ];
+  }
+  function copyForAgent() {
+    if (!hasFeedback()) return toast(T.nothingYet);
+    return copyText(toAgentMarkdown({ images: false })).then(() => toast(T.agentCopied));
+  }
+  async function downloadFeedback() {
+    if (!hasFeedback()) { toast(T.nothingYet); return false; }
+    const files = await feedbackFiles();
+    const name = baseName();
+    if (files.length === 2) { downloadText(files[0].data, `${name}.md`, 'text/markdown'); return true; }
+    const url = URL.createObjectURL(await makeZip(files.map((f) => ({ ...f, name: `${name}/${f.name}` }))));
+    downloadURL(url, `${name}.zip`);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    return true;
+  }
+  const blobToBase64 = (b) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(b); });
+  async function sendToAgent(btn) {
+    if (!BRIDGE) return false;
+    if (!hasFeedback()) { toast(T.nothingYet); return false; }
+    const label = btn?.innerHTML;
+    if (btn) { btn.disabled = true; btn.textContent = T.sending; }
+    try {
+      const files = await feedbackFiles();
+      const payload = { page: location.href, title: document.title, files: await Promise.all(files.map(async (f) => (typeof f.data === 'string' ? { name: f.name, text: f.data } : { name: f.name, base64: await blobToBase64(f.data) }))) };
+      const res = await fetch(BRIDGE + '/feedback', { method: 'POST', headers: { 'content-type': 'application/json', 'x-garabato': '1' }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      toast(T.sent(j.path || ''), 4500);
+      if (review) review.saved = true;
+      resetFeedback();
+      if (btn) { btn.textContent = '✓ ' + T.sentShort; return true; }
+      return true;
+    } catch (e) {
+      toast(T.sendFailed + (e.message || e), 5000);
+      if (btn) { btn.disabled = false; setHTML(btn, label); }
+      return false;
+    }
+  }
+  // after sending, start a clean round
+  function resetFeedback() {
+    if (editorFor) closeEditor(false);
+    state.frames.forEach((f) => f.url && URL.revokeObjectURL(f.url));
+    state.strokes = []; state.marks = []; state.speech = []; state.frames = []; state.history = [];
+    state.comments = [];
+    renderPins(); renderPanel(); updateBar(); dirty();
+  }
+
+  // minimal .zip writer (stored, no compression: JPEGs don't shrink anyway)
+  const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  async function makeZip(files) {
+    const enc = new TextEncoder(), parts = [], central = [];
+    const d = new Date(), time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    let off = 0;
+    for (const f of files) {
+      const data = typeof f.data === 'string' ? enc.encode(f.data) : new Uint8Array(await f.data.arrayBuffer());
+      const name = enc.encode(f.name), crc = crc32(data);
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(10, time, true); h.setUint16(12, date, true);
+      h.setUint32(14, crc, true); h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true);
+      parts.push(h, name, data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(12, time, true); c.setUint16(14, date, true);
+      c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+      central.push(c, name);
+      off += 30 + name.length + data.length;
+    }
+    const size = central.reduce((n, x) => n + x.byteLength, 0);
+    const e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, size, true); e.setUint32(16, off, true);
+    return new Blob([...parts, ...central, e], { type: 'application/zip' });
   }
   function downloadURL(url, name) {
     const a = document.createElement('a');
@@ -855,6 +1216,126 @@
   function setCamSize(i) { state.camSize = i; camEl.style.setProperty('--s', CAM_SIZES[i] + 'px'); keepInView(camEl); }
   setCamSize(1);
 
+  // ───────────────────────────── frames: screenshots taken from the recording itself
+  const grab = { video: null, pending: [], timer: 0, n: 0 };
+  function startGrabber(track) {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true;
+    v.srcObject = new MediaStream([track]);
+    v.play().catch(() => {});
+    grab.video = v;
+  }
+  function stopGrabber() { flushFrame(); if (grab.video) { grab.video.srcObject = null; grab.video = null; } }
+  function grabFrame() {
+    const v = grab.video;
+    if (!v || !v.videoWidth || state.frames.length >= 80) return null;
+    const k = Math.min(1, 1600 / v.videoWidth);
+    const c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    const f = { id: ++grab.n, t: isRec() ? elapsed() : null, rec: state.recCount, at: Date.now(), scrollY: window.scrollY, w: c.width, h: c.height, blob: null };
+    f.ready = new Promise((res) => c.toBlob((b) => { f.blob = b; res(b); }, 'image/jpeg', 0.85));
+    state.frames.push(f);
+    return f;
+  }
+  // one frame per burst of marks, a moment after the last one (so the drawing is complete)
+  function scheduleFrame(ref) {
+    if (!grab.video) return;
+    grab.pending.push(ref);
+    clearTimeout(grab.timer);
+    grab.timer = setTimeout(flushFrame, 900);
+  }
+  function flushFrame() {
+    clearTimeout(grab.timer);
+    const refs = grab.pending.splice(0);
+    if (!refs.length) return;
+    const f = grabFrame();
+    if (f) refs.forEach((x) => { x.frame = f.id; });
+  }
+
+  // ───────────────────────────── live transcript (Web Speech API)
+  const speech = { r: null, want: false, interim: '', start: null, failed: false, stopT: null, done: Promise.resolve() };
+  function speechStart() {
+    if (!SR || !state.transcribe || !state.micOn || speech.failed || !isRec()) return;
+    speech.want = true;
+    if (speech.r) return;
+    const r = new SR();
+    r.lang = SPEECH_LANGS[state.speechLang].code;
+    r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    let ended;
+    r.ended = new Promise((res) => { ended = res; });
+    r.onresult = (e) => {
+      if (r.dead) return;
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) addSegment(res[0].transcript); else interim += res[0].transcript;
+      }
+      interim = interim.trim();
+      if (interim && speech.start == null) speech.start = Math.max(0, (isRec() ? elapsed() : speech.stopT ?? 0) - 600);
+      speech.interim = interim;
+      renderCaption();
+    };
+    r.onerror = (e) => {
+      if (['not-allowed', 'service-not-allowed'].includes(e.error)) { speech.failed = true; toast(T.speechBlocked, 4500); }
+      else if (['network', 'language-not-supported'].includes(e.error)) { speech.failed = true; toast(T.speechNet, 4500); }
+      if (speech.failed) { speech.want = false; updateBar(); renderCaption(); }
+    };
+    r.onend = () => {
+      if (!r.dead && speech.interim) addSegment(speech.interim); // words that never got a final result
+      ended();
+      if (speech.r === r) speech.r = null;
+      if (speech.want && isRec() && !speech.failed) setTimeout(speechStart, 150); // Chrome ends sessions on its own: keep going
+      renderCaption();
+    };
+    try { r.start(); speech.r = r; } catch { ended(); }
+  }
+  // stop listening; the words in flight still arrive as a final result before 'end'
+  function speechStop() {
+    speech.want = false;
+    const r = speech.r;
+    if (!r) { speech.interim = ''; renderCaption(); return Promise.resolve(); }
+    try { r.stop(); } catch { }
+    return r.ended;
+  }
+  function speechRestart() {
+    const r = speech.r;
+    speech.r = null; speech.interim = ''; speech.start = null;
+    if (r) { r.dead = true; try { r.abort(); } catch { } }
+    if (isRec()) speechStart();
+    renderCaption();
+  }
+  function addSegment(txt) {
+    const text = String(txt || '').replace(/\s+/g, ' ').trim();
+    speech.interim = '';
+    if (!text) return;
+    const t1 = isRec() ? elapsed() : (speech.stopT ?? 0);
+    const t0 = speech.start != null ? Math.min(speech.start, t1) : Math.max(0, t1 - Math.min(8000, 400 + text.length * 60));
+    speech.start = null;
+    const at1 = Date.now();
+    const seg = { id: ++uid, t0, t1, at0: at1 - (t1 - t0), at1, rec: state.recCount, text, lang: SPEECH_LANGS[state.speechLang].code, frame: null };
+    state.speech.push(seg);
+    // things said without drawing still get a picture of what was on screen
+    const lastF = state.frames[state.frames.length - 1];
+    if (grab.video && (!lastF || at1 - lastF.at > 6000 || Math.abs(window.scrollY - lastF.scrollY) > H * 0.3)) seg.frame = grabFrame()?.id ?? lastF?.id ?? null;
+    else seg.frame = lastF?.id ?? null;
+  }
+  let capTimer = 0;
+  function renderCaption() {
+    clearTimeout(capTimer);
+    const last = state.speech[state.speech.length - 1];
+    const recent = last && last.rec === state.recCount && Date.now() - last.at1 < 3500 ? last.text : '';
+    const show = isRec() && state.transcribe && !speech.failed && !!(speech.interim || recent);
+    captionEl.classList.toggle('hidden', !show);
+    if (!show) return;
+    const tail = (x, n) => (x.length > n ? '…' + x.slice(-n) : x);
+    setHTML(captionEl, speech.interim ? `${recent ? esc(tail(recent, 50)) + ' ' : ''}<i>${esc(tail(speech.interim, 110))}</i>` : esc(tail(recent, 140)));
+    const br = bar.getBoundingClientRect();
+    captionEl.style.left = clamp(br.left + br.width / 2, 160, W - 160) + 'px';
+    captionEl.style.bottom = (br.top > H / 2 ? H - br.top + 10 : 24) + 'px';
+    if (!speech.interim) capTimer = setTimeout(renderCaption, 3600);
+  }
+
   // ───────────────────────────── recording
   const rec = { status: 'idle', recorder: null, chunks: [], display: null, dest: null, tabSrc: null, micGain: null, startedAt: 0, pausedAt: 0, pausedTotal: 0, mime: '', tick: 0, cancelled: false, duration: 0 };
   function elapsed() {
@@ -910,6 +1391,7 @@
     const vs = vTrack.getSettings();
     rec.ar = vs.width && vs.height ? `${vs.width} / ${vs.height}` : null;
     vTrack.addEventListener('ended', () => stopRecording());
+    startGrabber(vTrack);
 
     rec.autoCam = false;
     if (state.camWanted && !state.camOn) rec.autoCam = await camOn();
@@ -945,6 +1427,8 @@
     rec.status = 'recording';
     rec.tick = setInterval(updateTimer, 250);
     updateBar(); updateHalo();
+    speechStart();
+    setTimeout(() => { if (isRec() && !state.frames.some((f) => f.rec === state.recCount)) grabFrame(); }, 500);
   }
   function countdown() {
     return new Promise((resolve) => {
@@ -965,14 +1449,16 @@
     });
   }
   function pauseResume() {
-    if (rec.status === 'recording') { rec.recorder.pause(); rec.pausedAt = now(); rec.status = 'paused'; }
-    else if (rec.status === 'paused') { rec.recorder.resume(); rec.pausedTotal += now() - rec.pausedAt; rec.status = 'recording'; }
-    updateBar(); updateTimer();
+    if (rec.status === 'recording') { flushFrame(); speech.stopT = elapsed(); speechStop(); rec.recorder.pause(); rec.pausedAt = now(); rec.status = 'paused'; }
+    else if (rec.status === 'paused') { rec.recorder.resume(); rec.pausedTotal += now() - rec.pausedAt; rec.status = 'recording'; speechStart(); }
+    updateBar(); updateTimer(); renderCaption();
   }
   function stopRecording() {
     if (rec.status === 'countdown' || rec.status === 'starting') { rec.cancelled = true; return; }
     if (!isRec()) return;
-    rec.duration = elapsed();
+    flushFrame();
+    rec.duration = speech.stopT = elapsed();
+    speech.done = speechStop();
     rec.status = 'stopping';
     clearInterval(rec.tick);
     updateBar(); updateHalo();
@@ -984,17 +1470,25 @@
     try { rec.tabSrc?.disconnect(); } catch { }
     try { rec.micGain?.disconnect(); } catch { }
     rec.display = null; rec.tabSrc = null; rec.micGain = null; rec.dest = null; rec.recorder = null;
+    stopGrabber();
+    if (speech.want) speech.done = speechStop();
     if (rec.autoCam && state.camOn) camOff(); // we only turned it on to record: turn it back off
     rec.autoCam = false;
     if (!state.camOn) releaseMic();
   }
-  function finishRecording() {
-    if (rec.status !== 'stopping') return;
+  async function finishRecording() {
+    if (rec.status !== 'stopping' || rec.finishing) return;
+    rec.finishing = true;
     const type = (rec.mime || rec.recorder?.mimeType || 'video/webm').split(';')[0];
     const blob = new Blob(rec.chunks, { type });
     rec.chunks = [];
+    state.recDur[state.recCount - 1] = rec.duration;
     teardown();
+    await Promise.race([speech.done, new Promise((res) => setTimeout(res, 1500))]); // last words
+    await Promise.all(state.frames.map((f) => f.ready));
+    rec.finishing = false;
     rec.status = 'idle';
+    renderCaption();
     updateBar(); updateHalo();
     openReview(blob, rec.duration, state.recCount, rec.ar);
   }
@@ -1005,42 +1499,65 @@
 
   // ───────────────────────────── review
   let review = null; // { url, blob, ext, dur, n, saved }
+  const markKind = (m) => (m.type === 'comment' ? `${T.kinds.comment} ${numberOf(m.ref)}` : T.kinds[m.ref.desc?.kind] || m.ref.tool);
+  function markTarget(m) {
+    if (m.type === 'comment') return m.ref.text;
+    const d = m.ref.desc || {}, el = d.target || d.to || d.over;
+    return d.text ? `“${d.text}”` : el ? (el.text ? `“${el.text}”` : el.selector) : '';
+  }
+  function momentHTML(mo, i, n) {
+    const seek = mo.rec === n && mo.t != null;
+    const marks = mo.marks.map((m) => `<span class="mark"><b>${esc(markKind(m))}</b> ${esc(markTarget(m))}</span>`).join('');
+    return `<button class="moment" ${seek ? `data-t="${mo.t}"` : ''}>
+      <div class="meta"><span class="ed-n" style="--c:#1d1d1f;--fg:#fff">${i + 1}</span>${mo.t != null ? `<span class="chip red">● ${esc(tLabel(mo.t, mo.rec, T.take))}</span>` : ''}</div>
+      ${mo.said.length ? `<div class="quote">${esc(mo.said.map((x) => x.text).join(' … '))}</div>` : ''}
+      ${marks ? `<div class="marks">${marks}</div>` : ''}
+      ${frameURL(mo.frame) ? `<img class="thumb" alt="" src="${frameURL(mo.frame)}">` : ''}</button>`;
+  }
+  function frameURL(id) {
+    const f = id && state.frames.find((x) => x.id === id);
+    if (!f?.blob) return null;
+    return (f.url ||= URL.createObjectURL(f.blob));
+  }
   function openReview(blob, dur, n, ar) {
     if (review) URL.revokeObjectURL(review.url);
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
     const url = URL.createObjectURL(blob);
     const name = baseName();
     review = { url, blob, ext, dur, n, name, saved: false };
-    const list = state.comments.filter((c) => !c.fresh && c.rec === n && c.t != null);
-    const vtt = URL.createObjectURL(new Blob([toVTT(n, dur)], { type: 'text/vtt' }));
+    const cues = toVTT(n, dur);
+    const vtt = URL.createObjectURL(new Blob([cues.text], { type: 'text/vtt' }));
     review.vtt = vtt;
+    const moments = buildMoments();
+    const here = moments.map((mo, i) => ({ mo, i })).filter(({ mo }) => mo.rec === n && mo.t != null);
     const mb = (blob.size / 1048576).toFixed(1);
     setHTML(reviewEl, `
       <div class="rv-card">
         <div class="rv-head"><b>${T.ready}</b><span class="muted">${fmt(dur)} · ${mb} MB · ${ext.toUpperCase()}</span><span class="sp"></span>
           <button class="ib" data-rv="close" title="${T.close}">${icon('close')}</button></div>
-        <div class="rv-body ${list.length ? '' : 'solo'}">
+        <div class="rv-body ${moments.length ? '' : 'solo'}">
           <div class="rv-main">
             ${PLAYER ? `<iframe class="player" src="${PLAYER}" title="${T.recording}"></iframe>`
-              : `<video class="player" controls playsinline preload="metadata" src="${url}">${list.length ? `<track kind="subtitles" srclang="${LANG}" label="${T.comments}" src="${vtt}" default>` : ''}</video>`}
-            ${list.length ? `<div class="rv-track">${list.map((c) => { const col = colorOf(c); return `<button class="mk" data-t="${c.t}" title="${esc(fmt(c.t) + ' · ' + c.text)}" style="left:${clamp((c.t / Math.max(dur, 1)) * 100, 0, 100)}%;--c:${col.c};--fg:${col.fg}">${numberOf(c)}</button>`; }).join('')}</div>` : ''}
+              : `<video class="player" controls playsinline preload="metadata" src="${url}">${cues.count ? `<track kind="subtitles" srclang="${LANG}" label="${T.transcriptLabel}" src="${vtt}" default>` : ''}</video>`}
+            ${here.length ? `<div class="rv-track">${here.map(({ mo, i }) => `<button class="mk" data-t="${mo.t}" title="${esc(fmt(mo.t) + ' · ' + (mo.said.map((x) => x.text).join(' ').slice(0, 90) || mo.marks.map(markKind).join(', ')))}" style="left:${clamp((mo.t / Math.max(dur, 1)) * 100, 0, 100)}%;--c:#FF3B30;--fg:#fff">${i + 1}</button>`).join('')}</div>` : ''}
           </div>
-          ${list.length ? `<div class="rv-side">${list.map((c) => itemHTML(c, { seek: true })).join('')}</div>` : ''}
+          ${moments.length ? `<div class="rv-side"><h4>${T.moments}</h4>${moments.map((mo, i) => momentHTML(mo, i, n)).join('')}</div>` : ''}
         </div>
         <div class="rv-foot">
-          <button class="btn primary" data-rv="video">${icon('download')} ${T.downloadVideo}</button>
-          <button class="btn ghost" data-rv="md">${T.mdBtn}</button>
-          ${list.length ? `<button class="btn ghost" data-rv="vtt">${T.vttBtn}</button>` : ''}
-          <button class="btn ghost" data-rv="copy">${icon('copy')} ${T.copyBtn}</button>
+          ${BRIDGE ? `<button class="btn agent" data-rv="agent">${icon('send')} ${T.sendAgent}</button>` : `<button class="btn primary" data-rv="feedback">${icon('download')} ${T.downloadFeedback}</button>`}
+          <button class="btn ghost" data-rv="copy">${icon('copy')} ${T.copyAgent}</button>
+          <button class="btn ghost" data-rv="video">${icon('download')} ${T.downloadVideo}</button>
+          ${cues.count ? `<button class="btn ghost" data-rv="vtt">${T.vttBtn}</button>` : ''}
           <span class="sp"></span>
           <button class="btn danger" data-rv="discard">${T.discard}</button>
         </div>
       </div>`);
+    reviewEl.querySelectorAll('img.thumb').forEach((im) => im.addEventListener('error', () => im.remove())); // a strict CSP may block blob: images
     reviewEl.classList.remove('hidden');
     if (ar) reviewEl.querySelector('.player').style.setProperty('--ar', ar);
     if (PLAYER) {
       const fr = reviewEl.querySelector('iframe.player');
-      fr.addEventListener('load', () => fr.contentWindow.postMessage({ garabato: 1, cmd: 'load', blob, vtt: list.length ? toVTT(n, dur) : null, lang: LANG, label: T.comments }, new URL(PLAYER).origin), { once: true });
+      fr.addEventListener('load', () => fr.contentWindow.postMessage({ garabato: 1, cmd: 'load', blob, vtt: cues.count ? cues.text : null, lang: LANG, label: T.transcriptLabel }, new URL(PLAYER).origin), { once: true });
       return;
     }
     const v = reviewEl.querySelector('video');
@@ -1081,9 +1598,10 @@
     const b = e.target.closest('[data-rv]'); if (!b || !review) return;
     const a = b.dataset.rv;
     if (a === 'video') { downloadURL(review.url, `${review.name}.${review.ext}`); review.saved = true; }
-    else if (a === 'md') downloadText(toMarkdown(review.n, review.dur), `${review.name}.md`, 'text/markdown');
-    else if (a === 'vtt') downloadText(toVTT(review.n, review.dur), `${review.name}.vtt`, 'text/vtt');
-    else if (a === 'copy') copyText(toMarkdown(review.n, review.dur)).then(() => toast(T.copied));
+    else if (a === 'agent') sendToAgent(b);
+    else if (a === 'feedback') downloadFeedback().then((ok) => { if (ok && review) review.saved = true; });
+    else if (a === 'vtt') downloadText(toVTT(review.n, review.dur).text, `${review.name}.vtt`, 'text/vtt');
+    else if (a === 'copy') copyForAgent();
     else if (a === 'close') closeReview(false);
     else if (a === 'discard') closeReview(false);
   });
@@ -1094,7 +1612,7 @@
     if (t !== 'comment' && editorFor) closeEditor(true);
     updateBar(); updateHalo();
   }
-  function closePopovers() { colorsEl.classList.add('hidden'); }
+  function closePopovers() { colorsEl.classList.add('hidden'); langsEl.classList.add('hidden'); }
   function updateBar() {
     const live = DRAW.has(state.tool) || state.tool === 'comment';
     canvas.classList.toggle('live', live);
@@ -1111,6 +1629,11 @@
     setHTML(micB, icon('mic', state.micOn ? '' : P.slash));
     micB.classList.toggle('off', !state.micOn);
     micB.title = state.micOn ? T.micMute : T.micUnmute;
+    const spB = bar.querySelector('[data-act="speech"]');
+    const spOn = state.transcribe && !speech.failed;
+    setHTML(spB, icon('speech', spOn ? '' : P.slash) + (spOn ? `<span class="lang">${SPEECH_LANGS[state.speechLang].id.toUpperCase()}</span>` : ''));
+    spB.classList.toggle('off', !spOn);
+    spB.title = spOn ? T.speechLang(SPEECH_LANGS[state.speechLang].label) : T.speechOff;
     const listB = bar.querySelector('[data-act="list"]');
     listB.classList.toggle('on', state.panelOpen);
     listB.querySelector('.badge').textContent = state.comments.filter((c) => !c.fresh).length || '';
@@ -1133,13 +1656,13 @@
   }
 
   // buttons never keep focus: otherwise Space/Enter would fire them again (e.g. stop the recording)
-  [bar, colorsEl, camEl].forEach((el) => el.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); }));
+  [bar, colorsEl, langsEl, camEl].forEach((el) => el.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); }));
   bar.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     b.blur();
     if (b.dataset.tool) { closePopovers(); return setTool(b.dataset.tool); }
     const a = b.dataset.act;
-    if (a !== 'color') closePopovers();
+    if (a !== 'color' && a !== 'speech') closePopovers();
     if (a === 'rec') { if (rec.status === 'idle') startRecording(); else stopRecording(); }
     else if (a === 'pause') pauseResume();
     else if (a === 'color') toggleColors(b);
@@ -1151,24 +1674,47 @@
       else { state.camWanted = true; camOn(); }
     }
     else if (a === 'mic') toggleMic();
+    else if (a === 'speech') toggleLangs(b);
     else if (a === 'list') { state.panelOpen = !state.panelOpen; renderPanel(); updateBar(); }
     else if (a === 'close') hide();
   });
   async function toggleMic() {
     state.micOn = !state.micOn;
     updateBar();
-    if (state.micOn) { if (await ensureMic()) connectMicToRec(); }
-    else if (isRec()) connectMicToRec();
+    if (state.micOn) { if (await ensureMic()) connectMicToRec(); speechStart(); }
+    else if (isRec()) { connectMicToRec(); speechStop(); }
     else releaseMic();
+  }
+  function placePopover(el, btn) {
+    const r = btn.getBoundingClientRect(), cw = el.offsetWidth, ch = el.offsetHeight;
+    el.style.left = clamp(r.left + r.width / 2 - cw / 2, 8, W - cw - 8) + 'px';
+    el.style.top = (r.top - ch - 10 < 8 ? r.bottom + 10 : r.top - ch - 10) + 'px';
   }
   function toggleColors(btn) {
     if (!colorsEl.classList.contains('hidden')) return closePopovers();
+    closePopovers();
     colorsEl.classList.remove('hidden');
     colorsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', COLORS[b.dataset.color] === state.color));
-    const r = btn.getBoundingClientRect(), cw = colorsEl.offsetWidth, ch = colorsEl.offsetHeight;
-    colorsEl.style.left = clamp(r.left + r.width / 2 - cw / 2, 8, W - cw - 8) + 'px';
-    colorsEl.style.top = (r.top - ch - 10 < 8 ? r.bottom + 10 : r.top - ch - 10) + 'px';
+    placePopover(colorsEl, btn);
   }
+  function toggleLangs(btn) {
+    if (!langsEl.classList.contains('hidden')) return closePopovers();
+    closePopovers();
+    const cur = state.transcribe && !speech.failed ? state.speechLang : -1;
+    setHTML(langsEl, SPEECH_LANGS.map((l, i) => `<button data-lang="${i}" class="${cur === i ? 'on' : ''}">${l.label}</button>`).join('')
+      + `<button data-lang="-1" class="${cur === -1 ? 'on' : ''}">${T.langOff}</button><div class="note">${T.speechNote}</div>`);
+    langsEl.classList.remove('hidden');
+    placePopover(langsEl, btn);
+  }
+  langsEl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-lang]'); if (!b) return;
+    const i = Number(b.dataset.lang);
+    speech.failed = false;
+    state.transcribe = i >= 0;
+    if (i >= 0) state.speechLang = i;
+    speechRestart();
+    closePopovers(); updateBar();
+  });
   colorsEl.addEventListener('click', (e) => {
     const b = e.target.closest('[data-color]'); if (!b) return;
     state.color = COLORS[b.dataset.color];
@@ -1250,7 +1796,7 @@
     let handled = true;
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && k === 'z') undo();
     else if (e.metaKey || e.ctrlKey || e.altKey) handled = false;
-    else if (k === 'escape') { if (!reviewEl.classList.contains('hidden')) closeReview(false); else if (!colorsEl.classList.contains('hidden')) closePopovers(); else if (state.tool !== 'cursor') setTool('cursor'); else handled = false; }
+    else if (k === 'escape') { if (!reviewEl.classList.contains('hidden')) closeReview(false); else if (!colorsEl.classList.contains('hidden') || !langsEl.classList.contains('hidden')) closePopovers(); else if (state.tool !== 'cursor') setTool('cursor'); else handled = false; }
     else if (KEYMAP[k] && !e.shiftKey) setTool(KEYMAP[k]);
     else if (k === 'f') { state.fade = !state.fade; updateBar(); toast(state.fade ? T.fadeShort : T.fadeOff, 1200); }
     else if (k === 'l') { state.panelOpen = !state.panelOpen; renderPanel(); updateBar(); }
@@ -1284,7 +1830,7 @@
   resize();
   updateBar();
   renderPins();
-  toast(T.hello, 3200);
+  toast(BRIDGE ? T.agentSession : T.hello, 3600);
 
-  window.__garabato = { toggle: () => host.dispatchEvent(new CustomEvent('garabato:toggle')), state, rec, _test: { openReview, elapsed } };
+  window.__garabato = { toggle: () => host.dispatchEvent(new CustomEvent('garabato:toggle')), state, rec, _test: { openReview, elapsed, buildMoments, toAgentMarkdown, toAgentJSON, feedbackFiles, makeZip } };
 })();

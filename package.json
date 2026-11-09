@@ -1,0 +1,19 @@
+{
+  "name": "garabato",
+  "version": "0.2.0",
+  "description": "Talk through any web page while you draw on it, and turn it into feedback your coding agent can act on.",
+  "type": "module",
+  "bin": {
+    "garabato": "cli/garabato.mjs"
+  },
+  "files": [
+    "cli",
+    "extension"
+  ],
+  "engines": {
+    "node": ">=18.18"
+  },
+  "keywords": ["feedback", "annotation", "screen-recorder", "mcp", "coding-agent", "design-review", "chrome-extension"],
+  "repository": "github:ignaciobernardo/garabato",
+  "license": "MIT"
+}
